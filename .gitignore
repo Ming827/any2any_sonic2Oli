@@ -1,0 +1,54 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+*.egg
+.eggs/
+
+# Caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.cache/
+.coverage
+.coverage.*
+
+# IDE
+.idea/
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Training / eval output
+checkpoints/*
+logs/
+logs_rl/
+logs_eval/
+A100_logs/
+A100_luna_logs/
+A100_h1_logs/
+logs_luna/
+outputs/
+multirun/
+wandb/
+.hydra/
+sonic_transfer/
+# TensorBoard event files (in case any land outside logs_rl/)
+events.out.tfevents.*
+tb/
+
+# Mujoco
+MUJOCO_LOG.TXT
+
+# Local data symlinks / large datasets
+data/
+# Model checkpoints
+checkpoint/
+*.pt

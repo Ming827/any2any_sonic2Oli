@@ -1,0 +1,393 @@
+# @package _global_
+# SONIC Oli LoRA config (dense / short-horizon future variant) — fine-tune
+# pretrained G1 encoder + g1_dyn decoder for the Oli 31-DOF robot using LoRA.
+#
+# Difference vs sonic_oli_lora: the motion future reference frames are
+# sampled every 0.02s instead of 0.1s (dt_future_ref_frames: 0.1 -> 0.02).
+# num_future_frames stays 10, so the lookahead window is COMPRESSED from
+# ~1.0s to ~0.2s — a denser, near-term motion preview suited to teleop /
+# reactive tracking where the relevant signal is the immediate next frames
+# rather than a full second of future trajectory.
+# No obs dimensions change (frame count is unchanged), so the G1 ckpt and
+# encoder/decoder shapes load exactly as in sonic_oli_lora.
+#
+# Only the G1 (robot tracking) encoder is used; teleop and SMPL encoders
+# are present in the pretrained model but frozen and unused at inference.
+#
+# Usage:
+#   python gear_sonic/train_agent_trl.py \
+#     +exp=manager/universal_token/all_modes/sonic_oli_LoRA_teleop \
+#     algo.config.pretrained_model.path=/path/to/sonic_checkpoint/last.pt \
+#     manager_env.commands.motion.motion_lib_cfg.motion_file=/path/to/oli_motions
+#
+# motion_file can point to a directory of .pkl files (pre-converted) OR
+# .npy files (wbt_lite_mlp format, converted on-the-fly during loading).
+
+defaults:
+  - /algo: ppo_im_phc
+  - /manager_env: base_env
+  - /callbacks/read_eval
+  - /callbacks/im_resample
+  - /aux_losses: universal_token/g1_only
+  - override /trainer: trl_ppo_aux
+  - override /actor_critic: universal_token/all_mlp_v1
+  # Tokenizer aligned with sonic_oli_native (g1-only) to drop the unused
+  # teleop / SMPL / VR obs channels. They're never read by active_encoders
+  # ("g1" only) but Isaac Lab's ObservationManager still computes + caches
+  # them every step → ~3-5 GB extra rollout buffer at num_envs=16384, which
+  # was pushing single-GPU OOM. If you need teleop/SMPL down the line,
+  # switch back to unitoken_all_noz.
+  - override /manager_env/observations/tokenizer: unitoken_g1_only
+  - override /manager_env/observations/policy: local_dir_hist
+  - override /manager_env/observations/critic: privileged_mf_hist
+  - override /manager_env/events: tracking/oli_wbt_aligned
+  - override /manager_env/terminations: tracking/base # _adaptive_strict_ori_foot_xyz
+  - override /manager_env/rewards: tracking/base_5point_local_feet_acc
+
+use_manager_env: true
+
+exp_base: ${hydra:runtime.choices.exp}
+exp_var: oli_lora_teleop
+experiment_name: ${exp_base}_${exp_var}
+# Output matches wbt_finetune so company deploy tool can scan it directly:
+#   logs/rsl_rl/LoRA/<timestamp>/model_<step>.pt
+experiment_dir: ${base_dir}/rsl_rl/LoRA/${timestamp}
+
+num_envs: 2048
+project_name: sonic_LoRA
+
+actor_prop_history_length: 10
+actor_actions_history_length: 10
+
+critic_prop_history_length: 10
+critic_actions_history_length: 10
+
+manager_env:
+  rewards:
+    feet_acc:
+      weight: -2.5e-6
+  # Override ee_body_pos termination: only watch ankles (no wrists) for LoRA.
+  # The G1 ckpt's wrist actions diverge fast on Oli's reversed wrist chain
+  # (Oli yaw→pitch→roll vs G1 roll→pitch→yaw), so the wrist body deviates
+  # before LoRA has had time to learn the chain remapping. Removing wrists
+  # from the termination set lets LoRA train on full episodes; the wrist
+  # tracking signal still flows through the reward (reward_point_body still
+  # includes left/right_wrist_roll_link). Add wrists back once the policy
+  # has converged on legs+torso, or train a second-stage fine-tune with
+  # threshold=0.3 + wrists included.
+  terminations:
+    ee_body_pos:
+      params:
+        threshold: 0.3
+        body_names:
+          - "left_ankle_roll_link"
+          - "right_ankle_roll_link"
+          - "left_wrist_roll_link"
+          - "right_wrist_roll_link"
+  events:
+    base_com:
+      params:
+        asset_cfg:
+          body_names: "waist_pitch_link"
+    randomize_rigid_body_mass:
+      params:
+        asset_cfg:
+          body_names: ".*wrist_yaw.*|waist_pitch_link"
+  config:
+    robot:
+      type: oli_native
+    terrain_type: trimesh
+  commands:
+    motion:
+      # Robot is Oli 31-DOF/32-body — env-level motion data is Oli-native
+      # (same as sonic_oli_native). The G1 ckpt only initializes the policy
+      # backbone; the OliLoRAWrapper handles the 31↔29 conversion at the
+      # policy network boundary (proprio_mode=slice on input, DofBridge on
+      # output). This avoids the G1-namespace body_pos_w double-permutation
+      # bug that caused immediate ee_body_pos termination at reset.
+      motion_lib_num_dof: 31
+      anchor_body: "base_link"
+      # End-effector tracking: Oli's wrist chain is yaw→pitch→roll (terminal
+      # = wrist_roll_link). Tracking this terminal body forces all 3 wrist
+      # DOFs to be controlled.
+      reward_point_body: ["base_link", "left_wrist_roll_link", "right_wrist_roll_link", "left_ankle_roll_link", "right_ankle_roll_link"]
+      reward_point_body_offset: [[0.0, 0.0, 0.0], [0.0, -0.00, 0.0], [0.0, 0.00, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]
+      vr_3point_body: ["left_wrist_roll_link", "right_wrist_roll_link", "waist_pitch_link"]
+      vr_3point_body_offset: [[0.0, -0.0, 0.0], [0.0, 0.00, 0.0], [0.0, 0.0, 0.0]]
+      body_names: [
+        "base_link",
+        "left_hip_roll_link",
+        "left_knee_link",
+        "left_ankle_roll_link",
+        "right_hip_roll_link",
+        "right_knee_link",
+        "right_ankle_roll_link",
+        "waist_pitch_link",
+        "left_shoulder_roll_link",
+        "left_elbow_link",
+        "left_wrist_roll_link",
+        "right_shoulder_roll_link",
+        "right_elbow_link",
+        "right_wrist_roll_link",
+      ]
+      num_future_frames: 10
+      # Future ref frames spaced 0.02s apart (vs 0.1s in sonic_oli_lora):
+      # 10 frames × 0.02s → 0.2s lookahead window. 0.02 * target_fps(50) = 1,
+      # an integer, so frame_skips = 1 with no truncation warning.
+      dt_future_ref_frames: 0.02
+      smpl_num_future_frames: 10
+      smpl_dt_future_ref_frames: 0.02
+      cat_upper_body_poses: false
+      cat_upper_body_poses_prob: 0.0
+
+      freeze_frame_aug: false
+      teleop_sample_prob_when_smpl: 0.5
+
+      motion_lib_cfg:
+        adaptive_sampling:
+          adp_samp_failure_rate_max_over_mean: 200
+        motion_file: data/oli_motions_pkl
+        # Optional: restrict scanning to listed subfolders of motion_file.
+        # Leave unset / null → scan the whole directory recursively (default).
+        # Example:
+        #   include_subdirs:
+        #     - walking
+        #     - running
+        #     - dancing
+        # → only loads motions under data/oli_motions_pkl/{walking,running,dancing}/.
+        # Missing subdirs are warned + skipped; if all entries miss, errors out.
+        # include_subdirs: null
+        smpl_motion_file: data/bones_seed_smpl
+        smpl_y_up: true
+
+algo:
+  config:
+    # Set to 1 (per-epoch) instead of -1 (disabled): this cloud platform
+    # rejects PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True ("not
+    # supported on this platform" warning at startup), so fragmentation
+    # builds up between iter N learning end and iter N+1 rollout start —
+    # the OOMs we see are always "try to alloc ~200 MiB while ~250 MiB is
+    # reserved-but-unallocated". Periodic empty_cache hands those free
+    # chunks back to the driver, restoring contiguity. Marginal speed cost
+    # (one CUDA sync per epoch).
+    empty_cache_every_n_ppo_epoch: 1
+    # Aligned with ppo_im_phc default (32) and sonic_oli_native, so the
+    # tot_timesteps axis is directly comparable between LoRA / Native runs.
+    num_steps_per_env: 24
+    use_clampped_std: true
+    # Exploration: init at 1.0 + cap at 1.0, matching the wbt_lite_mlp
+    # pattern. With entropy_decay enabled below, the std parameter starts
+    # high (maximum exploration), and as entropy_coef shrinks every
+    # entropy_decay_interval iters, PPO naturally pulls the std down — the
+    # classic "init=1.0 → monotonic decrease" curve, driven by the
+    # optimizer rather than a hard schedule.
+    init_noise_std: 0.5
+    std_clamp_min: 0.001
+    std_clamp_max: 0.5
+    # Loosened from 0.1 to 0.5 (PPO standard range): tight clipping was
+    # starving LoRA gradients early in training; LoRA params are few and
+    # gradient magnitudes naturally small, so 0.5 is safer than restrictive.
+    max_grad_norm: 0.1
+
+    # Learning rate: a conservative 2.5× bump over the ppo_im_phc default
+    # 2e-5 (which was set for full fine-tune to match Native). 1e-4 was
+    # tried and caused KL to spike / policy to thrash, so we step back to
+    # 5e-5 — still gives LoRA A/B room to move (B starts at zero, needs
+    # gradient signal to grow) but small enough to keep early PPO updates
+    # stable. Adaptive KL controller floats it inside [adaptive_lr_min,
+    # adaptive_lr_max].
+    actor_learning_rate: 5e-5
+    adaptive_lr_min: 2e-5
+    adaptive_lr_max: 2e-4
+
+    # ---- entropy_coef decay (wbt_lite_mlp-style) ----
+    # Multiplicative decay applied every `entropy_decay_interval` iterations,
+    # floored at `entropy_decay_min`. Mirrors
+    # rsl_rl_lib/rsl_rl/runners/on_policy_runner.py:217-219 in wbt_lite_mlp.
+    #
+    # Effect: with init_noise_std=1.0 (high initial exploration), shrinking
+    # entropy bonus lets PPO naturally pull the std down over iterations —
+    # the "init=1.0 → monotonic decrease" pattern, but driven by the
+    # optimizer's own decision, not a hard schedule.
+    #
+    # rate=0.95 chosen over wbt_lite_mlp's default 0.8 → slower decay,
+    # exploration window stays open longer (LoRA needs more iters to find
+    # the right adaptation than full fine-tune from scratch).
+    entropy_decay: false
+    entropy_decay_rate: 0.95
+    entropy_decay_interval: 1000
+    entropy_decay_min: 0.001
+
+    # Pretrained G1 SONIC checkpoint. Default = checkpoint/last.pt under
+    # the repo root (resolves regardless of cwd / folder rename).
+    pretrained_model:
+      path: ${repo_root:}/checkpoint/last.pt
+      state_dict_key: policy_state_dict
+      strict: false
+      module_mapping:
+        policy.actor_module: actor_module.
+
+    # LoRA / DoRA configuration for Oli fine-tuning.
+    # Asymmetric rank: encoder small / decoder large. Encoder only needs to
+    # remap the motion-input space (mostly a near-identity adjustment since
+    # the kinematic semantics of body slots are similar). Decoder carries
+    # the heavier burden: it must translate G1-trained latents into Oli
+    # action commands while compensating for the wrist sub-order swap and
+    # any residual cross-DOF effects — so it gets ~4× more capacity.
+    lora:
+      # Global rank/alpha — used as fallback only; encoder/decoder both
+      # override below.
+      rank: 32
+      alpha: 32.0
+      dropout: 0.0
+      skip_last: false
+      # head_default frozen at 0 → head action_mean is always 0.
+      # Combined with head std = std_clamp_min (1e-3) below, head joints
+      # are effectively deterministic at 0 (~0.057° noise, negligible).
+      learnable_head: false
+
+      # Variant: "lora" (vanilla / rsLoRA) or "dora" (weight-decomposed).
+      # DoRA can give slightly better cross-domain transfer at the cost of
+      # ~10% extra activation memory; reverted to vanilla LoRA after OOM
+      # at num_envs=16384 — the activation overhead pushed past 80 GB.
+      variant: "lora"
+      # rsLoRA scaling: alpha/sqrt(rank) instead of alpha/rank. Stable at high rank.
+      rslora: false
+      # Per-adapter learnable scalar gate (init 1.0). Off by default.
+      use_gate: false
+      # A-matrix init: "kaiming" (PEFT default) or "normal_0.02".
+      init_strategy: "kaiming"
+
+      # Per-module rank / alpha overrides:
+      # - encoder rank=0 → fully frozen, no LoRA injection.
+      #   Trade-off: gives up the small "body-shape / motion-distribution
+      #   adaptation" hedge from rank=8 (assumes G1-trained latents transfer
+      #   directly to Oli motion). In return saves ~3.5 GB activation memory
+      #   at num_envs=16384 — biggest single LoRA-internal lever after
+      #   benchmark showed rank reduction itself saves only tens of MB.
+      #   Decoder LoRA is the load-bearing path; encoder LoRA was a hedge.
+      # - decoder gets rank=64 + alpha=128 (4× capacity, 2× per-step
+      #   update magnitude) to learn the cross-DOF action translation
+      encoder_rank: 0
+      encoder_alpha: 0.0
+      decoder_rank: 64
+      decoder_alpha: 128.0
+
+      # Optional: dict {layer_idx: rank} for non-uniform rank per Linear layer.
+      # Example to bias adapters toward middle layers:
+      #   encoder_per_layer_ranks: {0: 4, 2: 8, 4: 16, 6: 8}
+      encoder_per_layer_ranks: null
+      decoder_per_layer_ranks: null
+
+      # Restrict LoRA injection to a subset of Linear sublayers, counted by
+      # their *positional index among nn.Linear children* (0-based; negative
+      # indices Python-style, so -1 = last Linear). null → inject into every
+      # Linear (legacy behavior).
+      #
+      # Why this matters for memory: backbone weights are frozen, but
+      # autograd still caches each layer's input as long as *some* trainable
+      # LoRA sits downstream in the same Sequential. Concentrating LoRA on
+      # the tail lets PyTorch short-circuit the backward through the frozen
+      # prefix (provided nothing upstream needs grad — true here since
+      # proprio_mode=slice and critic_obs comes straight from env). Front
+      # layers then cache nothing, freeing several GB at num_envs=16384.
+      #
+      # Recommended starting point on this topology (decoder=7 Linears,
+      # critic=7 Linears, encoder skipped via encoder_rank=0):
+      #   decoder_active_linears: [-3, -2, -1]    # last 3 of g1_dyn decoder
+      #   critic_active_linears:  [-2, -1]        # last 2 of critic backbone
+      # If reward degrades, widen the window (e.g. [-4, -3, -2, -1]).
+      encoder_active_linears: null
+      decoder_active_linears: null # [-3, -2, -1]
+      critic_active_linears: null # [-3, -2, -1]
+
+      # Apply torch.compile to the critic_module after LoRA wrapping.
+      # Critic backbone shape is static across iterations (LoRA only mutates
+      # A/B values, not Linear shapes), so Inductor's kernel fusion lands
+      # cleanly. First iter pays a 30-60s compile cost; steady-state critic
+      # forward is ~10-20% faster on this MLP topology.
+      #   "default":         safe baseline, eager-equivalent semantics
+      #   "reduce-overhead": uses CUDA Graphs; needs static shapes (works
+      #                       here because rollout chunks at 1024 and
+      #                       PPO mini-batches are deterministic)
+      #   false / null:      skip compile (no warm-up cost)
+      compile_critic: "default"
+
+      # Optional: load a previously-saved LoRA-only state_dict (small) on top
+      # of the freshly-injected adapters. Set to a path to enable.
+      adapter_checkpoint: null
+
+      # Full fine-tune escape hatch. When true, the entire pretrained backbone
+      # is left TRAINABLE (no freeze) — combined with encoder_rank=0 and
+      # decoder_rank=0 this turns the wrapper into "full fine-tune from G1
+      # ckpt" mode while still keeping proprio_proj / DofBridge / hip_pitch
+      # decomposition paths intact. Default false → vanilla LoRA behavior.
+      unfreeze_backbone: false
+
+      # bfloat16 autocast for actor + critic forward (training-time only).
+      # Weights stay fp32 in storage so the G1 ckpt loads unchanged; only
+      # forward intermediates are bf16. Halves activation cache (~3-6 GB
+      # at num_envs=16384) and speeds matmul ~30-50% on Ampere/Hopper GPUs.
+      # bf16 chosen over fp16: same exponent range as fp32, no NaN risk in
+      # PPO advantage scale, no loss scaling needed.
+      # Default true — bf16 autocast is the single biggest memory + speed
+      # lever at num_envs=16384 (halves activation cache, +30-50% matmul
+      # speed on Ampere/Hopper). Flip back to false only if you suspect
+      # a precision-related reward regression.
+      use_bf16: true
+
+      # Proprioception 31→29 mapping mode:
+      #   "linear" — learnable nn.Linear projecting Oli actor_obs (~990) → G1 (~930).
+      #              Identity-init on overlap; head DOFs blended into a learned
+      #              soft mapping. Default (matches the original wrapper).
+      #   "slice"  — hard name-based slicer: drop Oli's head joints from each
+      #              per-DOF segment of actor_obs (joint_pos / joint_vel / actions),
+      #              feed only the 29 G1-matching joints. No trainable params on
+      #              this path; the pretrained 29-DOF features see exactly the
+      #              joints they were trained on.
+      proprio_mode: "slice"
+      # When proprio_mode="slice", these must match the env's actual histories.
+      # Default null → trainer auto-fills from config.actor_prop_history_length /
+      # actor_actions_history_length.
+      proprio_actor_history_length: null
+      proprio_action_history_length: null
+
+    actor:
+      backbone:
+        # Only use G1 encoder for robot tracking
+        active_encoders: ["g1"]
+        active_decoders: ["g1_dyn"]
+        reencode_smpl_g1_recon: false
+        # Keep the FSQ quantizer frozen — unfreezing it caused noticeably
+        # slower collection time without clear benefit in early experiments.
+        # If you suspect the latent codebook is the bottleneck, retry with
+        # `false` and compare collection time + reward curve.
+        freeze_quantizer: true
+        # Gradient checkpointing infrastructure exists in BaseModule but is
+        # disabled by default after local benchmark showed it INCREASES memory
+        # ~3% (+430 MB at num_envs=1024) and slows training ~3% on this
+        # particular MLP topology — the SONIC encoder/decoder MLPs are too
+        # shallow (4 / 6 layers) for the activation-cache savings to outweigh
+        # checkpoint_sequential's bookkeeping + LoRA module recompute overhead.
+        # Keep the flag here as documentation; flip to true to experiment if
+        # the model architecture grows wider/deeper in the future.
+        encoders:
+          g1:
+            inputs: ["command_multi_future_nonflat", "motion_anchor_ori_b_mf_nonflat"]
+            # params:
+            #   use_gradient_checkpointing: true
+            #   gradient_checkpointing_segments: 2
+        # decoders:
+        #   g1_dyn:
+        #     params:
+        #       use_gradient_checkpointing: true
+        # teleop / smpl encoders and g1_kin decoder removed — only g1 encoder
+        # + g1_dyn decoder are active for Oli LoRA fine-tuning. Keeping the
+        # extras in this list would still construct + LoRA-inject them, wasting
+        # trainable params on modules that never see a forward pass.
+
+    critic:
+      backbone:
+        module_config_dict:
+          layer_config:
+            hidden_dims: [2048, 2048, 1024, 1024, 512, 512]

@@ -1,0 +1,70 @@
+# Oli-aligned events: 在 tracking/level0_4 的基础上叠加 wbt_lite_mlp 的 DR。
+#
+# 合并规则(给 Native + LoRA 用):
+#   * 同名项:对每个 range 取"两边取最大"(更激进的那一段)。
+#   * gear_sonic 独有 (add_joint_default_pos / randomize_rigid_body_mass[scale]):
+#       原样保留。
+#   * wbt 独有 (add_base_mass / add_hand_mass / random_inertias /
+#       random_joint_armature / actuator_gains): 直接加入。
+#
+# 注意:
+#   * `base_com.params.asset_cfg.body_names` 与 `randomize_rigid_body_mass.params
+#     .asset_cfg.body_names` 仍由各 exp yaml 再次 override(Native/LoRA 都把它
+#     们指到 waist_pitch_link / .*wrist_yaw.*|waist_pitch_link)。
+#   * `push_robot` 取并集后:wbt 的 1–3s 间隔 + gear_sonic 的 6D 全维 velocity
+#     range(其中 x/y 用 ±0.5 — 严格覆盖 wbt 的 ±0.4)。
+
+defaults:
+  - terms/physics_material@_here_
+  - terms/add_joint_default_pos@_here_
+  - terms/base_com@_here_
+  - terms/push_robot@_here_
+  - terms/randomize_rigid_body_mass@_here_
+  - terms/add_base_mass@_here_
+  - terms/add_hand_mass@_here_
+  - terms/random_inertias@_here_
+  - terms/random_joint_armature@_here_
+  - terms/actuator_gains@_here_
+
+_target_: gear_sonic.envs.manager_env.mdp.events.EventCfg
+
+# physics_material: 取并集 — restitution gear_sonic 0.5 vs wbt 0.6 → 0.6
+physics_material:
+  params:
+    restitution_range: [0.0, 0.6]
+
+# randomize_rigid_body_mass(reset → startup, scale): 保留 level0_4 原行为
+randomize_rigid_body_mass:
+  mode: "startup"
+  params:
+    asset_cfg:
+      _target_: isaaclab.managers.SceneEntityCfg
+      name: "robot"
+      body_names: ".*wrist_yaw.*|torso_link"
+    mass_distribution_params: [0.8, 2.5]
+    operation: "scale"
+
+# base_com:  gear_sonic vs wbt 逐 axis 取最大幅度
+#   gear_sonic: x [-0.025, 0.025], y [-0.05, 0.05], z [-0.05, 0.05]
+#   wbt:        x [-0.06,  0.06 ], y [-0.02, 0.02], z [-0.04, 0.04]
+base_com:
+  params:
+    com_range:
+      x: [-0.06, 0.06]
+      y: [-0.05, 0.05]
+      z: [-0.05, 0.05]
+
+# push_robot: 间隔取并集中"更激进"=更短(wbt 1–3s),velocity 6D 取并集
+#   wbt:        x/y [-0.4, 0.4]
+#   gear_sonic: x/y [-0.5, 0.5], z [-0.2, 0.2], roll/pitch [-0.52, 0.52], yaw [-0.78, 0.78]
+push_robot:
+  mode: "interval"
+  interval_range_s: [1.0, 3.0]
+  params:
+    velocity_range:
+      x: [-0.5, 0.5]
+      y: [-0.5, 0.5]
+      z: [-0.2, 0.2]
+      roll: [-0.52, 0.52]
+      pitch: [-0.52, 0.52]
+      yaw: [-0.78, 0.78]

@@ -1,0 +1,12 @@
+anti_shake_ang_vel:
+  _target_: isaaclab.managers.RewardTermCfg
+  func: gear_sonic.envs.manager_env.mdp:anti_shake_ang_vel_l2
+  weight: -5e-3
+  params:
+    command_name: "motion"
+    threshold: 1.5
+    # Names must be a subset of cfg.body_names from the motion command yaml.
+    # Oli's terminal wrist body is wrist_roll_link; head bodies (head_yaw_link/
+    # head_pitch_link) are not in the per-yaml cfg.body_names so they are
+    # omitted here.
+    body_names: ["left_wrist_roll_link", "right_wrist_roll_link"]

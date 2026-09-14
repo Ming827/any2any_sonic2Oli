@@ -1,0 +1,13 @@
+# wbt_lite_mlp-style hand-mass DR: 0–2 kg added to each wrist_roll link at startup
+# (simulates picking up an unknown payload).
+add_hand_mass:
+  _target_: isaaclab.managers.EventTermCfg
+  func: gear_sonic.envs.manager_env.mdp:randomize_rigid_body_mass
+  mode: "startup"
+  params:
+    asset_cfg:
+      _target_: isaaclab.managers.SceneEntityCfg
+      name: "robot"
+      body_names: ["left_wrist_roll_link", "right_wrist_roll_link"]
+    mass_distribution_params: [0.0, 2.0]
+    operation: "add"

@@ -1,0 +1,8 @@
+# @package algo.config.actor.backbone
+# Empty aux-loss bundle: the g1_kin reconstruction decoder isn't activated
+# in sonic_oli_native (active_decoders=["g1_dyn"] only), so the g1_recon
+# loss has nothing to attach to. RL PPO gradient alone trains the g1
+# encoder + g1_dyn decoder.
+
+aux_loss_func: {}
+aux_loss_coef: {}

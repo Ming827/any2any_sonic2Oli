@@ -1,0 +1,171 @@
+# @package _global_
+# SONIC Oli-native 31-DOF config — train from scratch.
+# Single encoder (g1 — renamed conceptually to "robot tracking encoder") +
+# single action decoder (g1_dyn). No LoRA, no pretrained checkpoint,
+# no teleop/SMPL branches.
+#
+# Motion data path is injected at launch:
+#   python gear_sonic/train_agent_trl.py \
+#     +exp=manager/universal_token/all_modes/sonic_oli_native \
+#     manager_env.commands.motion.motion_lib_cfg.motion_file=/path/to/oli_npy_dir
+#
+# motion_file can point to a directory of Oli 31-DOF .npy files (wbt_lite_mlp-
+# style), which motion_lib converts on-the-fly via
+# `gear_sonic.utils.npy_to_sonic_pkl.convert_npy_to_dict_oli`.
+
+defaults:
+  - /algo: ppo_im_phc
+  - /manager_env: base_env
+  - /callbacks/read_eval
+  - /callbacks/im_resample
+  - /aux_losses: universal_token/g1_only
+  - override /trainer: trl_ppo_aux
+  - override /actor_critic: universal_token/all_mlp_v1
+  - override /manager_env/observations/tokenizer: unitoken_g1_only
+  - override /manager_env/observations/policy: local_dir_hist
+  - override /manager_env/observations/critic: privileged_mf_hist
+  # Native follows the LoRA environment randomization baseline.
+  - override /manager_env/events: tracking/level0_4
+  - override /manager_env/terminations: tracking/base # base_adaptive_strict_ori_foot_xyz
+  - override /manager_env/rewards: tracking/base_5point_local_feet_acc
+
+use_manager_env: true
+
+exp_base: ${hydra:runtime.choices.exp}
+exp_var: oli_native
+experiment_name: ${exp_base}_${exp_var}
+# Output matches wbt_finetune so company deploy tool can scan it directly:
+#   logs/rsl_rl/Native/<timestamp>/model_<step>.pt
+experiment_dir: ${base_dir}/rsl_rl/Native/${timestamp}
+
+# Match the LoRA rollout batch size.
+num_envs: 2048
+project_name: sonic_Native
+
+actor_prop_history_length: 10
+actor_actions_history_length: 10
+
+critic_prop_history_length: 10
+critic_actions_history_length: 10
+
+manager_env:
+  rewards:
+    feet_acc:
+      weight: -2.5e-6
+  # Override ee_body_pos termination to track Oli's terminal wrist body
+  # (wrist_roll_link) instead of base default wrist_yaw_link (proximal),
+  # so termination matches the wrist body used by reward_point_body.
+  terminations:
+    ee_body_pos:
+      params:
+        threshold: 0.3
+        body_names:
+          - "left_ankle_roll_link"
+          - "right_ankle_roll_link"
+          - "left_wrist_roll_link"
+          - "right_wrist_roll_link"
+  events:
+    base_com:
+      params:
+        asset_cfg:
+          body_names: "waist_pitch_link"
+    randomize_rigid_body_mass:
+      params:
+        asset_cfg:
+          body_names: ".*wrist_yaw.*|waist_pitch_link"
+  config:
+    robot:
+      type: oli_native
+    terrain_type: trimesh
+  commands:
+    motion:
+      motion_lib_num_dof: 31
+      # All body names are Oli-native (no aliasing needed — robot_type "oli_native"
+      # has body_name_aliases={}).
+      anchor_body: "base_link"
+      # End-effector tracking: Oli's wrist chain is yaw → pitch → roll (terminal),
+      # so wrist_roll_link is the actual hand-mount point. Tracking this body
+      # forces all 3 wrist DOFs to be controlled (vs wrist_yaw_link which left
+      # 2 wrist DOFs unconstrained).
+      reward_point_body: ["base_link", "left_wrist_roll_link", "right_wrist_roll_link", "left_ankle_roll_link", "right_ankle_roll_link"]
+      reward_point_body_offset: [[0.0, 0.0, 0.0], [0.0, -0.00, 0.0], [0.0, 0.00, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]
+      vr_3point_body: ["left_wrist_roll_link", "right_wrist_roll_link", "waist_pitch_link"]
+      vr_3point_body_offset: [[0.0, -0.0, 0.0], [0.0, 0.00, 0.0], [0.0, 0.0, 0.0]]
+      body_names: [
+        "base_link",
+        "left_hip_roll_link",
+        "left_knee_link",
+        "left_ankle_roll_link",
+        "right_hip_roll_link",
+        "right_knee_link",
+        "right_ankle_roll_link",
+        "waist_pitch_link",
+        "left_shoulder_roll_link",
+        "left_elbow_link",
+        "left_wrist_roll_link",
+        "right_shoulder_roll_link",
+        "right_elbow_link",
+        "right_wrist_roll_link",
+      ]
+      num_future_frames: 10
+      dt_future_ref_frames: 0.1
+      smpl_num_future_frames: 10
+      smpl_dt_future_ref_frames: 0.02
+      # FK-dependent augmentations all disabled: our path bypasses FK and
+      # consumes body_states directly. Re-enabling any of these would
+      # require re-running FK on modified pose_aa, which we've opted out of.
+      cat_upper_body_poses: false
+      cat_upper_body_poses_prob: 0.0
+      freeze_frame_aug: false
+      teleop_sample_prob_when_smpl: 0.5
+
+      motion_lib_cfg:
+        adaptive_sampling:
+          adp_samp_failure_rate_max_over_mean: 200
+        # Same dataset defaults as LoRA; normally override motion_file on CLI.
+        motion_file: data/oli_motions_pkl
+        # include_subdirs: null
+        smpl_motion_file: data/bones_seed_smpl
+        smpl_y_up: true
+
+algo:
+  config:
+    # Execution-only setting shared with LoRA; it does not change PPO math.
+    empty_cache_every_n_ppo_epoch: 1
+    num_steps_per_env: 24
+    use_clampped_std: true
+    # Exploration settings are identical to sonic_oli_lora.
+    init_noise_std: 0.7
+    std_clamp_min: 0.001
+    std_clamp_max: 0.7
+    max_grad_norm: 0.1
+
+    # Optimizer and adaptive-KL bounds are identical to sonic_oli_lora.
+    actor_learning_rate: 5.0e-5
+    adaptive_lr_min: 2e-5
+    adaptive_lr_max: 2e-4
+
+    # ---- entropy_coef decay (wbt_lite_mlp-style) ----
+    # Kept identical to LoRA. The schedule is currently disabled, but the
+    # latent parameters remain aligned for one-switch experiments.
+    entropy_decay: false
+    entropy_decay_rate: 0.95
+    entropy_decay_interval: 1000
+    entropy_decay_min: 0.001
+
+    actor:
+      backbone:
+        active_encoders: ["g1"]
+        active_decoders: ["g1_dyn"]
+        reencode_smpl_g1_recon: false
+        # Native trains from scratch, so keep the quantizer trainable.
+        freeze_quantizer: false
+        encoders:
+          g1:
+            inputs: ["command_multi_future_nonflat", "motion_anchor_ori_b_mf_nonflat"]
+
+    critic:
+      backbone:
+        module_config_dict:
+          layer_config:
+            hidden_dims: [2048, 2048, 1024, 1024, 512, 512]

@@ -1,0 +1,240 @@
+# @package _global_
+# Variant of sonic_oli_LoRA_teleop tailored for:
+#   • warm-start from an ALREADY-LoRA-trained ckpt (not the bare G1 base)
+#   • DECODER + FSQ frozen
+#   • ENCODER full fine-tune (no LoRA scaffolding — every encoder param trainable)
+#
+# Self-contained copy of sonic_oli_LoRA_teleop with only LoRA-related overrides
+# (hydra can't cleanly inherit `@package _global_` siblings, so we duplicate).
+# Diff vs sonic_oli_LoRA_teleop:
+#   pretrained_model.path  → LoRA ckpt (override on CLI per run)
+#   lora.decoder_rank      64 → 0
+#   lora.decoder_alpha   128.0 → 0.0
+#   lora.unfreeze_backbone false → true
+#   lora.compile_critic "default" → false
+#   + lora.freeze_decoder_post_unfreeze: true   (NEW)
+#   + lora.freeze_quantizer_post_unfreeze: true (NEW)
+#
+# Usage:
+#   python gear_sonic/train_agent_trl.py \
+#     +exp=manager/universal_token/all_modes/sonic_oli_LoRA_teleop_encfull \
+#     algo.config.pretrained_model.path=/abs/path/to/your_lora_ckpt.pt \
+#     manager_env.commands.motion.motion_lib_cfg.motion_file=/abs/path/to/motions
+
+defaults:
+  - /algo: ppo_im_phc
+  - /manager_env: base_env
+  - /callbacks/read_eval
+  - /callbacks/im_resample
+  - /aux_losses: universal_token/g1_only
+  - override /trainer: trl_ppo_aux
+  - override /actor_critic: universal_token/all_mlp_v1
+  - override /manager_env/observations/tokenizer: unitoken_g1_only
+  - override /manager_env/observations/policy: local_dir_hist
+  - override /manager_env/observations/critic: privileged_mf_hist
+  - override /manager_env/events: tracking/oli_wbt_aligned
+  - override /manager_env/terminations: tracking/base
+  - override /manager_env/rewards: tracking/base_5point_local_feet_acc
+
+use_manager_env: true
+
+exp_base: ${hydra:runtime.choices.exp}
+exp_var: oli_lora_teleop_encfull
+experiment_name: ${exp_base}_${exp_var}
+experiment_dir: ${base_dir}/rsl_rl/LoRA/${timestamp}
+
+num_envs: 2048
+project_name: sonic_LoRA
+
+actor_prop_history_length: 10
+actor_actions_history_length: 10
+
+critic_prop_history_length: 10
+critic_actions_history_length: 10
+
+manager_env:
+  rewards:
+    feet_acc:
+      weight: -2.5e-6
+  terminations:
+    ee_body_pos:
+      params:
+        threshold: 0.3
+        body_names:
+          - "left_ankle_roll_link"
+          - "right_ankle_roll_link"
+          - "left_wrist_roll_link"
+          - "right_wrist_roll_link"
+  events:
+    base_com:
+      params:
+        asset_cfg:
+          body_names: "waist_pitch_link"
+    randomize_rigid_body_mass:
+      params:
+        asset_cfg:
+          body_names: ".*wrist_yaw.*|waist_pitch_link"
+  config:
+    robot:
+      type: oli_native
+    terrain_type: trimesh
+  commands:
+    motion:
+      motion_lib_num_dof: 31
+      anchor_body: "base_link"
+      reward_point_body: ["base_link", "left_wrist_roll_link", "right_wrist_roll_link", "left_ankle_roll_link", "right_ankle_roll_link"]
+      reward_point_body_offset: [[0.0, 0.0, 0.0], [0.0, -0.00, 0.0], [0.0, 0.00, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]
+      vr_3point_body: ["left_wrist_roll_link", "right_wrist_roll_link", "waist_pitch_link"]
+      vr_3point_body_offset: [[0.0, -0.0, 0.0], [0.0, 0.00, 0.0], [0.0, 0.0, 0.0]]
+      body_names: [
+        "base_link",
+        "left_hip_roll_link",
+        "left_knee_link",
+        "left_ankle_roll_link",
+        "right_hip_roll_link",
+        "right_knee_link",
+        "right_ankle_roll_link",
+        "waist_pitch_link",
+        "left_shoulder_roll_link",
+        "left_elbow_link",
+        "left_wrist_roll_link",
+        "right_shoulder_roll_link",
+        "right_elbow_link",
+        "right_wrist_roll_link",
+      ]
+      num_future_frames: 10
+      dt_future_ref_frames: 0.02
+      smpl_num_future_frames: 10
+      smpl_dt_future_ref_frames: 0.02
+      cat_upper_body_poses: false
+      cat_upper_body_poses_prob: 0.0
+
+      freeze_frame_aug: false
+      teleop_sample_prob_when_smpl: 0.5
+
+      motion_lib_cfg:
+        adaptive_sampling:
+          adp_samp_failure_rate_max_over_mean: 200
+        motion_file: data/oli_motions_pkl
+        smpl_motion_file: data/bones_seed_smpl
+        smpl_y_up: true
+
+algo:
+  config:
+    empty_cache_every_n_ppo_epoch: 1
+    num_steps_per_env: 24
+    use_clampped_std: true
+    init_noise_std: 0.5
+    std_clamp_min: 0.001
+    std_clamp_max: 0.5
+    max_grad_norm: 0.1
+
+    actor_learning_rate: 5e-5
+    adaptive_lr_min: 2e-5
+    adaptive_lr_max: 2e-4
+
+    entropy_decay: false
+    entropy_decay_rate: 0.95
+    entropy_decay_interval: 1000
+    entropy_decay_min: 0.001
+
+    # ────────────────────────────────────────────────────────────────────
+    # Warm start from an ALREADY-LoRA-trained ckpt (NOT the bare base).
+    # The LoRA ckpt's state_dict is wrapper-shaped under actor_module.*
+    # so module_mapping stays the same as the parent variant.
+    # ────────────────────────────────────────────────────────────────────
+    # Pretrained path: the BASE G1 ckpt. The trainer's normal load path handles
+    # this correctly (encoder + decoder resize fire, dims align). We then warm-
+    # start from the LoRA ckpt via lora.warmstart_lora_ckpt below — that load
+    # happens AFTER wrapper construction, so it just needs key-name matching
+    # without dim wrangling.
+    pretrained_model:
+      path: ${repo_root:}/checkpoint/last.pt
+      state_dict_key: policy_state_dict
+      strict: false
+      module_mapping:
+        policy.actor_module: actor_module.
+
+    lora:
+      rank: 32
+      alpha: 32.0
+      dropout: 0.0
+      skip_last: false
+      learnable_head: false
+      variant: "lora"
+      rslora: false
+      use_gate: false
+      init_strategy: "kaiming"
+
+      # ──────────────────────────────────────────────────────────────────
+      # Both rank=0 → NO LoRA adapters injected on either encoder or
+      # decoder. With unfreeze_backbone=true (below), encoder params are
+      # trainable directly. Decoder gets re-frozen post-init via the new
+      # freeze_decoder_post_unfreeze flag.
+      # ──────────────────────────────────────────────────────────────────
+      # ENCODER: ckpt has no LoRA on encoder, so rank=0 (matches; no scaffolding).
+      #   Combined with unfreeze_backbone=true → encoder base weights are
+      #   trainable, full fine-tune.
+      # DECODER: ckpt HAS LoRA on decoder (rank=32 in the original training).
+      #   Setting decoder_rank=32 here makes the wrapper inject the same
+      #   LoRA scaffolding, so the warmstart load matches key-by-key.
+      #   `freeze_decoder_post_unfreeze` then re-freezes the decoder (base
+      #   weights + LoRA adapters) so it's effectively static at inference.
+      encoder_rank: 0
+      encoder_alpha: 0.0
+      decoder_rank: 64
+      decoder_alpha: 128.0
+
+      encoder_per_layer_ranks: null
+      decoder_per_layer_ranks: null
+      encoder_active_linears: null
+      decoder_active_linears: null
+      critic_active_linears: null
+
+      # Critic compile off: torch.compile + autograd over fully-trainable
+      # encoder is flaky in early iters.
+      compile_critic: false
+
+      adapter_checkpoint: null
+
+      # ──────────────────────────────────────────────────────────────────
+      # The crucial flag: makes pretrained.encoders.g1 params trainable.
+      # ⚠ Also unfreezes decoder + FSQ — handled by the post-unfreeze re-
+      # freeze hooks below.
+      # ──────────────────────────────────────────────────────────────────
+      unfreeze_backbone: true
+
+      # NEW hooks consumed by train_agent_trl.py — see the freeze_*_post_unfreeze
+      # block right after wrapper.print_summary().
+      freeze_decoder_post_unfreeze: true
+      freeze_quantizer_post_unfreeze: true
+
+      # NEW: warm-start from a previously-trained LoRA ckpt. Loaded AFTER wrapper
+      # construction (bypasses trainer's pre-wrap pretrained_model logic, which
+      # has trouble with wrapper-shaped ckpts and doesn't always resize decoder).
+      # The path can be relative (resolved against repo root) or absolute.
+      # Override on CLI:
+      #   algo.config.lora.warmstart_lora_ckpt=/abs/path/to/lora.pt
+      warmstart_lora_ckpt: ${repo_root:}/logs/rsl_rl/LoRA/20260513_232158/model_8000.pt
+
+      use_bf16: true
+
+      proprio_mode: "slice"
+      proprio_actor_history_length: null
+      proprio_action_history_length: null
+
+    actor:
+      backbone:
+        active_encoders: ["g1"]
+        active_decoders: ["g1_dyn"]
+        reencode_smpl_g1_recon: false
+        freeze_quantizer: true
+        encoders:
+          g1:
+            inputs: ["command_multi_future_nonflat", "motion_anchor_ori_b_mf_nonflat"]
+
+    critic:
+      backbone:
+        module_config_dict:
+          layer_config:
+            hidden_dims: [2048, 2048, 1024, 1024, 512, 512]

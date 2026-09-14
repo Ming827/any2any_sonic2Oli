@@ -1,0 +1,8 @@
+model_save:
+  _target_: gear_sonic.trl.callbacks.model_save_callback.ModelSaveCallback
+  save_dir: ${experiment_dir}
+  save_frequency: 2000
+  # Set to 0 to disable last.pt entirely (only model_<step>.pt + model_0.pt
+  # will be written). Default 50 = a fresh "last.pt" every 50 steps.
+  save_last_frequency: 100
+  max_disk_usage: 3 # TB

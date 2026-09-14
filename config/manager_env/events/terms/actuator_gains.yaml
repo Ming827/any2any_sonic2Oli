@@ -1,0 +1,13 @@
+# wbt_lite_mlp-style PD-gain DR: ±10% on stiffness/damping for every actuator, at reset.
+actuator_gains:
+  _target_: isaaclab.managers.EventTermCfg
+  func: isaaclab.envs.mdp:randomize_actuator_gains
+  mode: "reset"
+  params:
+    asset_cfg:
+      _target_: isaaclab.managers.SceneEntityCfg
+      name: "robot"
+      joint_names: ".*"
+    stiffness_distribution_params: [0.9, 1.1]
+    damping_distribution_params: [0.9, 1.1]
+    operation: "scale"

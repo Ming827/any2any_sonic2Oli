@@ -1,0 +1,12 @@
+# wbt_lite_mlp-style trunk-mass DR: ±3 kg added to waist_pitch_link at startup.
+add_base_mass:
+  _target_: isaaclab.managers.EventTermCfg
+  func: gear_sonic.envs.manager_env.mdp:randomize_rigid_body_mass
+  mode: "startup"
+  params:
+    asset_cfg:
+      _target_: isaaclab.managers.SceneEntityCfg
+      name: "robot"
+      body_names: "waist_pitch_link"
+    mass_distribution_params: [-3.0, 3.0]
+    operation: "add"

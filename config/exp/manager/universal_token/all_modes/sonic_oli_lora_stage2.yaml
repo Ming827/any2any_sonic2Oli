@@ -1,0 +1,222 @@
+# @package _global_
+# SONIC Oli LoRA — STAGE 2: full fine-tune from a converged stage-1 ckpt.
+#
+# Stage 1 (sonic_oli_lora.yaml): backbone FROZEN, only LoRA adapters
+#   (encoder rank=8, decoder rank=64) train. Cheap, fast, low-risk.
+#
+# Stage 2 (this file): backbone UNFROZEN + LoRA adapters still trainable.
+#   Lower LR by 10×. Lifts the low-rank cap that LoRA imposes — the residual
+#   "things LoRA couldn't represent" can now be absorbed by the backbone.
+#   Starting from a stage-1 ckpt is a far better warm-start than going from
+#   the G1 ckpt directly, because stage 1 has already aligned action space
+#   for Oli; stage 2 just polishes precision.
+#
+# When to start stage 2:
+#   - reward in stage 1 has plateaued (no clear improvement over last 1-2k steps)
+#   - termination rate has stabilized
+#   Typical signal: reward curve flattens despite LR adapter not being saturated.
+#
+# Usage:
+#   python gear_sonic/train_agent_trl.py \
+#     +exp=manager/universal_token/all_modes/sonic_oli_lora_stage2 \
+#     algo.config.pretrained_model.path=<absolute path to stage-1 last.pt> \
+#     manager_env.commands.motion.motion_lib_cfg.motion_file=<motion dir>
+#
+# IMPORTANT: pretrained_model.path MUST be a stage-1 last.pt, NOT the
+# original G1 SONIC ckpt. The state_dict shape & module_mapping below assume
+# stage-1 ckpt format (actor_module.X keys, no `policy.` prefix).
+
+defaults:
+  - /algo: ppo_im_phc
+  - /manager_env: base_env
+  - /callbacks/read_eval
+  - /callbacks/im_resample
+  - /aux_losses: universal_token/g1_only
+  - override /trainer: trl_ppo_aux
+  - override /actor_critic: universal_token/all_mlp_v1
+  - override /manager_env/observations/tokenizer: unitoken_all_noz
+  - override /manager_env/observations/policy: local_dir_hist
+  - override /manager_env/observations/critic: privileged_mf_hist
+  - override /manager_env/events: tracking/level0_4
+  - override /manager_env/terminations: tracking/base
+  - override /manager_env/rewards: tracking/base_5point_local_feet_acc
+
+use_manager_env: true
+
+exp_base: ${hydra:runtime.choices.exp}
+exp_var: oli_lora_stage2
+experiment_name: ${exp_base}_${exp_var}
+# Separate output tree so stage-2 ckpts don't mix with stage-1 ckpts.
+experiment_dir: ${base_dir}/rsl_rl/LoRA_stage2/${timestamp}
+
+num_envs: 2048
+project_name: sonic_LoRA_stage2
+
+actor_prop_history_length: 10
+actor_actions_history_length: 10
+critic_prop_history_length: 10
+critic_actions_history_length: 10
+
+manager_env:
+  rewards:
+    feet_acc:
+      weight: -2.5e-6
+  # Termination tightened from stage-1's 0.3 → 0.2: stage 1 used loose
+  # threshold to allow LoRA to learn through full episodes despite early
+  # wrist drift; in stage 2 the policy is already converged on legs+torso,
+  # so we push for tighter tracking precision.
+  terminations:
+    ee_body_pos:
+      params:
+        threshold: 0.2
+        body_names:
+          - "left_ankle_roll_link"
+          - "right_ankle_roll_link"
+          - "left_wrist_roll_link"
+          - "right_wrist_roll_link"
+  events:
+    base_com:
+      params:
+        asset_cfg:
+          body_names: "waist_pitch_link"
+    randomize_rigid_body_mass:
+      params:
+        asset_cfg:
+          body_names: ".*wrist_yaw.*|waist_pitch_link"
+  config:
+    robot:
+      type: oli_native
+    terrain_type: trimesh
+  commands:
+    motion:
+      motion_lib_num_dof: 31
+      anchor_body: "base_link"
+      reward_point_body: ["base_link", "left_wrist_roll_link", "right_wrist_roll_link", "left_ankle_roll_link", "right_ankle_roll_link"]
+      reward_point_body_offset: [[0.0, 0.0, 0.0], [0.0, -0.00, 0.0], [0.0, 0.00, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]
+      vr_3point_body: ["left_wrist_roll_link", "right_wrist_roll_link", "waist_pitch_link"]
+      vr_3point_body_offset: [[0.0, -0.0, 0.0], [0.0, 0.00, 0.0], [0.0, 0.0, 0.0]]
+      body_names: [
+        "base_link",
+        "left_hip_roll_link",
+        "left_knee_link",
+        "left_ankle_roll_link",
+        "right_hip_roll_link",
+        "right_knee_link",
+        "right_ankle_roll_link",
+        "waist_pitch_link",
+        "left_shoulder_roll_link",
+        "left_elbow_link",
+        "left_wrist_roll_link",
+        "right_shoulder_roll_link",
+        "right_elbow_link",
+        "right_wrist_roll_link",
+      ]
+      num_future_frames: 10
+      dt_future_ref_frames: 0.1
+      smpl_num_future_frames: 10
+      smpl_dt_future_ref_frames: 0.02
+      cat_upper_body_poses: false
+      cat_upper_body_poses_prob: 0.0
+
+      freeze_frame_aug: false
+      teleop_sample_prob_when_smpl: 0.5
+
+      motion_lib_cfg:
+        adaptive_sampling:
+          adp_samp_failure_rate_max_over_mean: 200
+        motion_file: data/oli_motions_pkl
+        # See sonic_oli_lora.yaml for include_subdirs documentation.
+        # include_subdirs: null
+        smpl_motion_file: data/bones_seed_smpl
+        smpl_y_up: true
+
+algo:
+  config:
+    empty_cache_every_n_ppo_epoch: -1
+    num_steps_per_env: 24
+    use_clampped_std: true
+    # Stage 2 starts from a converged policy → much less exploration needed.
+    # Lower init_std and tighten clamp_max so noise budget shrinks fast.
+    init_noise_std: 0.3
+    std_clamp_min: 0.001
+    std_clamp_max: 0.5
+    max_grad_norm: 0.5
+
+    # Stage 2 LR: 1/10 of stage 1's actor=2e-5 (inherited from ppo_im_phc).
+    # Backbone is now trainable — without aggressive LR reduction the
+    # backbone will drift fast and erase the stage-1 alignment. Both
+    # `actor_lr` and `learning_rate` (the value-net / shared LR) lowered
+    # together; adaptive LR (if active) clamps proportionally.
+    actor_lr: 2.0e-6
+    learning_rate: 2.0e-6
+
+    # Pretrained loading — STAGE 1 ckpt, not G1.
+    # `module_mapping: {}` because stage-1 ckpt keys are already in the
+    # `actor_module.X` form (saved via `model.policy.state_dict()` which
+    # strips the `policy.` prefix). The G1 ckpt needs the
+    # `policy.actor_module → actor_module.` remap; this one doesn't.
+    pretrained_model:
+      path: ???   # REQUIRED via CLI: stage-1 logs/.../last.pt or model_<step>.pt
+      state_dict_key: policy_state_dict
+      strict: false
+      module_mapping: {}
+
+    # LoRA / DoRA configuration — MUST mirror stage 1's encoder/decoder
+    # ranks for the stage-1 LoRA tensors to map onto the same module
+    # structure. Changing rank here while loading stage-1 ckpt will
+    # silently fail (load_state_dict strict=False just drops shape
+    # mismatches; the loaded LoRA tensors won't take effect).
+    lora:
+      rank: 32
+      alpha: 32.0
+      dropout: 0.0
+      skip_last: false
+      learnable_head: false
+
+      variant: "dora"
+      rslora: false
+      use_gate: false
+      init_strategy: "kaiming"
+
+      encoder_rank: 8
+      encoder_alpha: 16.0
+      decoder_rank: 64
+      decoder_alpha: 128.0
+
+      encoder_per_layer_ranks: null
+      decoder_per_layer_ranks: null
+
+      adapter_checkpoint: null
+
+      # KEY DIFFERENCE FROM STAGE 1.
+      # When True, OliLoRAWrapper.__init__ skips `freeze_module(self.pretrained)`,
+      # so every backbone param keeps `requires_grad=True`. Combined with the
+      # still-injected LoRA adapters (rank=8/64), the optimizer now updates:
+      #   - all backbone weights (encoder, FSQ, decoder, head, etc.)
+      #   - all LoRA delta_A / delta_B / DoRA magnitude scalars
+      # Lowered LR is the only thing keeping this from blowing up.
+      unfreeze_backbone: true
+
+      proprio_mode: "slice"
+      proprio_actor_history_length: null
+      proprio_action_history_length: null
+
+    actor:
+      backbone:
+        active_encoders: ["g1"]
+        active_decoders: ["g1_dyn"]
+        reencode_smpl_g1_recon: false
+        # freeze_quantizer is now overridden by unfreeze_backbone=True at the
+        # wrapper level — quantizer is trainable in stage 2 like everything
+        # else. Keeping the flag True here as documentation; effective
+        # behavior depends on the wrapper's Step 1 logic.
+        freeze_quantizer: true
+        encoders:
+          g1:
+            inputs: ["command_multi_future_nonflat", "motion_anchor_ori_b_mf_nonflat"]
+
+    critic:
+      backbone:
+        module_config_dict:
+          layer_config:
+            hidden_dims: [2048, 2048, 1024, 1024, 512, 512]

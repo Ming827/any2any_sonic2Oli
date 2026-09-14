@@ -1,0 +1,12 @@
+# wbt_lite_mlp-style joint-armature DR: ±10% scale on every joint's armature at reset.
+random_joint_armature:
+  _target_: isaaclab.managers.EventTermCfg
+  func: isaaclab.envs.mdp:randomize_joint_parameters
+  mode: "reset"
+  params:
+    asset_cfg:
+      _target_: isaaclab.managers.SceneEntityCfg
+      name: "robot"
+      joint_names: ".*"
+    armature_distribution_params: [0.9, 1.1]
+    operation: "scale"

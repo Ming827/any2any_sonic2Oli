@@ -1,0 +1,6 @@
+# usd文件引用关系
+##  A -> B -> C: A引用B,B引用C
+
+# HU_D04_01.usd
+HU_D04_01.usd -> configuration/HU_D04_01_sensor.usd -> configuration/HU_D04_01_physics.usd -> configuration/HU_D04_01_base.usd
+
