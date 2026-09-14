@@ -139,9 +139,9 @@ algo:
     empty_cache_every_n_ppo_epoch: 1
     num_steps_per_env: 24
     use_clampped_std: true
-    init_noise_std: 0.7
+    init_noise_std: 0.6
     std_clamp_min: 0.001
-    std_clamp_max: 0.7
+    std_clamp_max: 0.6
     max_grad_norm: 0.1
 
     # Learning rate: a conservative 2.5× bump over the ppo_im_phc default
