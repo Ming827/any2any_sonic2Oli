@@ -13,7 +13,7 @@ Two training entry points share the same environment, reward, and PPO stack:
 | Mode | Experiment config | Starts from |
 | --- | --- | --- |
 | **LoRA** (Any2Any) | `sonic_oli_lora` | Pretrained SONIC G1 checkpoint |
-| **Native** (baseline) | `sonic_oli_native` | Random init |
+| **Scratch training** (baseline) | `sonic_oli_native` | Random init |
 
 ---
 
@@ -205,6 +205,8 @@ data/oli_motion/
 
 Point the motion library at the directory containing your clips. If you pass a parent directory holding several sub-folders, either keep the default `include_subdirs` whitelist or disable it with `include_subdirs=null`.
 
+> **Note on the shipped dataset.** `atom_motions_v6_selected_fix10n11_100hz` is a deliberately small, hand-selected subset of the full motion corpus. It is provided so that the efficiency claim of Any2Any can be reproduced quickly on a single GPU: LoRA fine-tuning and scratch training are run on exactly the same clips, making the gap in sample efficiency and wall-clock time easy to verify without access to the full dataset or a large cluster.
+
 For upstream G1 data (Bones-SEED, 142K motions), see [Training Data](https://nvlabs.github.io/GR00T-WholeBodyControl/user_guide/training_data.html) and the conversion scripts in `data_process/`.
 
 ---
@@ -240,7 +242,7 @@ CUDA_VISIBLE_DEVICES=0 python train_agent_trl.py \
 
 Outputs go to `logs/rsl_rl/LoRA/<timestamp>/`.
 
-### 5.3 Native training from scratch
+### 5.3 Scratch training (baseline)
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 python train_agent_trl.py \
@@ -252,18 +254,6 @@ CUDA_VISIBLE_DEVICES=0 python train_agent_trl.py \
 Outputs go to `logs/rsl_rl/Native/<timestamp>/`. No pretrained checkpoint is required.
 
 > Upstream trains full SONIC on 64+ GPUs. On a single GPU expect a much longer wall clock — start from LoRA with a reduced `num_envs`.
-
-### 5.4 LoRA vs. Native
-
-Both configs are aligned on every shared hyperparameter (`num_envs`, `num_steps_per_env`, learning rates, adaptive-LR bounds, entropy schedule, rewards, terminations, observations, domain randomization). Only the following differ by design:
-
-| Key | LoRA | Native |
-| --- | --- | --- |
-| `algo.config.pretrained_model` | present | absent |
-| `algo.config.lora.*` | present | absent |
-| `...actor.backbone.freeze_quantizer` | `true` | `false` |
-
-The FSQ quantizer stays frozen under LoRA (it belongs to the pretrained tokenizer) and is trainable in Native mode.
 
 ---
 
