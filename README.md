@@ -253,8 +253,6 @@ CUDA_VISIBLE_DEVICES=0 python train_agent_trl.py \
 
 Outputs go to `logs/rsl_rl/Native/<timestamp>/`. No pretrained checkpoint is required.
 
-> Upstream trains full SONIC on 64+ GPUs. On a single GPU expect a much longer wall clock — start from LoRA with a reduced `num_envs`.
-
 ---
 
 ## 6. Useful overrides
