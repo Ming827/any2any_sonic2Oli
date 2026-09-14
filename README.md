@@ -1,15 +1,19 @@
-# SONIC Whole-Body Control — Oli (31-DoF)
+# Any2Any — SONIC G1 → Oli (31-DoF)
 
-Adapts the pretrained **SONIC** G1 (29-DoF) whole-body tracking policy to the **Oli** humanoid (31-DoF), via either LoRA fine-tuning or training from scratch.
+This is the code for **[Any2Any: Efficient Cross-Embodiment Transfer for Humanoid Whole-Body Tracking](https://arxiv.org/abs/2605.23733)**. Project page: [any2any.top](https://any2any.top/)
 
-Derived from the SONIC training stack in [NVlabs/GR00T-WholeBodyControl](https://github.com/NVlabs/GR00T-WholeBodyControl) (the `gear_sonic/` subproject). Upstream docs: [nvlabs.github.io/GR00T-WholeBodyControl](https://nvlabs.github.io/GR00T-WholeBodyControl/) · Paper: [arXiv:2511.07820](https://arxiv.org/abs/2511.07820)
+Any2Any transfers an existing whole-body tracking (WBT) specialist to a new humanoid with only a small fraction of the data and compute needed to train from scratch: first kinematic alignment of the input/output spaces, then dynamics adaptation via lightweight parameter-efficient fine-tuning (PEFT) on the dynamics-sensitive modules.
+
+This repository is the concrete instance of that recipe: it adapts the pretrained **SONIC** G1 (29-DoF) tracking policy to the **Oli** humanoid (31-DoF).
+
+Built on the SONIC training stack in [NVlabs/GR00T-WholeBodyControl](https://github.com/NVlabs/GR00T-WholeBodyControl) (the `gear_sonic/` subproject). Upstream docs: [nvlabs.github.io/GR00T-WholeBodyControl](https://nvlabs.github.io/GR00T-WholeBodyControl/) · SONIC paper: [arXiv:2511.07820](https://arxiv.org/abs/2511.07820)
 
 Two training entry points share the same environment, reward, and PPO stack:
 
 | Mode | Experiment config | Starts from |
 | --- | --- | --- |
-| **LoRA** | `sonic_oli_lora` | Pretrained SONIC G1 checkpoint |
-| **Native** | `sonic_oli_native` | Random init |
+| **LoRA** (Any2Any) | `sonic_oli_lora` | Pretrained SONIC G1 checkpoint |
+| **Native** (baseline) | `sonic_oli_native` | Random init |
 
 ---
 
@@ -302,80 +306,18 @@ python train_agent_trl.py +exp=manager/universal_token/all_modes/sonic_oli_lora 
 
 ---
 
-## 7. Evaluation
-
-```bash
-CUDA_VISIBLE_DEVICES=0 python eval_agent_trl.py \
-  +checkpoint=logs/rsl_rl/LoRA/<timestamp>/last.pt \
-  +headless=False \
-  ++num_envs=1 \
-  ++manager_env.observations.policy.enable_corruption=False \
-  ++manager_env.observations.tokenizer.enable_corruption=False
-```
-
-`eval_agent_trl.py` reads the training config from `config.yaml` next to the checkpoint (or one directory up), so the run directory must stay intact.
-
-To sanity-check the stock SONIC G1 checkpoint itself:
-
-```bash
-python eval_agent_trl.py +checkpoint=checkpoint/last.pt +num_envs=1 headless=False
-```
-
----
-
-## 8. Output layout
-
-```
-logs/
-└── rsl_rl/
-    └── LoRA/20260904_154231/
-        ├── .hydra/            # composed config + overrides
-        ├── config.yaml        # fully resolved run config
-        ├── meta.yaml          # max_train_steps, wandb run id
-        ├── last.pt            # latest weights
-        ├── model_step_*.pt    # periodic snapshots (save_interval=500)
-        ├── output/            # videos, eval artifacts
-        └── train.log
-```
-
-`logs/`, `wandb/`, and `checkpoint/` are Git-ignored.
-
----
-
-## 9. Troubleshooting
-
-See also the upstream [Troubleshooting guide](https://nvlabs.github.io/GR00T-WholeBodyControl/user_guide/troubleshooting.html).
-
-**`ModuleNotFoundError: No module named 'isaaclab'`**
-You are not in the Isaac Lab Python environment. Activate it, then re-run `pip install -e "gear_sonic/[training]"`.
-
-**`ModuleNotFoundError: No module named 'gear_sonic'`**
-The repository directory is not named `gear_sonic`, or its parent is not on `sys.path`. Rename the folder and reinstall.
-
-**`CUDA out of memory`**
-Lower `num_envs` (`2048 → 1024 → 512`). `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` is already set by the training script. LoRA keeps `algo.config.lora.use_bf16=true` by default.
-
-**`RuntimeError: size mismatch` when loading the checkpoint**
-The checkpoint's action/observation dimensions do not match the experiment config. For Oli this is expected without the LoRA wrapper's 31↔29 DoF bridge — use `+exp=.../sonic_oli_lora`, not a raw G1 recipe.
-
-**`PermissionError` writing `.hydra`**
-`base_dir` points at a path you cannot write to. Override it: `base_dir="${PWD}/logs"`.
-
-**`FileNotFoundError` from the motion library**
-None of the directories in `include_subdirs` exist under `motion_file`. Point `motion_file` directly at the clip folder, or pass `manager_env.commands.motion.motion_lib_cfg.include_subdirs=null`.
-
-**`assert "policy_state_dict" in sd` fails**
-You downloaded the ONNX deployment artifacts instead of the training checkpoint. LoRA needs `sonic_release/last.pt`, which contains `policy_state_dict`.
-
-**`trl` / `transformers` version conflict during install**
-Install exactly `trl==0.28.0` with `transformers>=4.56.2` as pinned in [pyproject.toml](pyproject.toml).
-
-**Mesh files are tiny text files**
-Git LFS was not installed before cloning. Run `git lfs install && git lfs pull`.
-
----
-
 ## Citation
+
+```bibtex
+@article{any2any,
+    title={Any2Any: Efficient Cross-Embodiment Transfer for Humanoid Whole-Body Tracking},
+    author={Anonymous},
+    journal={arXiv preprint arXiv:2605.23733},
+    year={2026}
+}
+```
+
+Please also cite SONIC, the pretrained backbone this work transfers from:
 
 ```bibtex
 @article{luo2025sonic,
