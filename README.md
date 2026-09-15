@@ -255,7 +255,23 @@ Outputs go to `logs/rsl_rl/Native/<timestamp>/`. No pretrained checkpoint is req
 
 ---
 
-## 6. Useful overrides
+## 6. Results
+
+Both runs use the identical environment, reward, PPO hyperparameters, `num_envs`, and the motion subset from Section 4 — the only difference is whether training starts from the pretrained SONIC G1 checkpoint (LoRA) or from random init (scratch).
+
+![LoRA vs. scratch training on Oli](results/20260915-103529.png)
+
+| | LoRA (Any2Any) | Scratch training |
+| --- | --- | --- |
+| Iterations to reward 30 | ~600 | ~3,300 |
+| Iterations to episode length 450 | ~800 | not reached by 4,200 |
+| Reward at 4,200 iterations | ~47 | ~33 |
+
+LoRA saturates episode length (i.e. stops early-terminating) within roughly 800 iterations, while scratch training is still climbing after 4,200. The pretrained tokenizer and motion prior carry over across the embodiment gap, so PPO only has to learn the residual dynamics correction instead of rediscovering whole-body tracking from nothing.
+
+---
+
+## 7. Useful overrides
 
 All Hydra overrides are `key=value` on the command line. See the upstream [Configuration Guide](https://nvlabs.github.io/GR00T-WholeBodyControl/user_guide/configuration.html).
 
